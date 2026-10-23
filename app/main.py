@@ -27,3 +27,13 @@ def health_check():
 @app.get("/api/v1/greet/{name}")
 def greet(name: str):
     return {"message": f"Hello, {name}!"}
+
+
+@app.get("/api/v1/deployment-info")
+def deployment_info():
+    return {
+        "app_name": APP_NAME,
+        "environment": APP_ENV,
+        "version": app.version,
+        "status": "running",
+    }
