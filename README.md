@@ -1,139 +1,143 @@
-
 # FastAPI CI/CD DevOps Project
 
-A Dockerized FastAPI application with automated testing,
-Docker build validation, and continuous deployment through
-GitHub Actions and Render.
+## 1. Project Overview
 
-## Features
+This project demonstrates how to build, test, containerize, and deploy a REST API using FastAPI and DevOps practices.
 
-- REST API built with FastAPI
-- Automated tests using pytest
-- Dockerized application
-- Docker Compose for local execution
-- GitHub Actions CI/CD workflow
-- Deployment to Render
-- Environment-based configuration
-- Health-check endpoint
-- Swagger API documentation
+The project uses automated testing and a GitHub Actions CI/CD pipeline. Docker is used to package the application, and Render hosts the deployed API.
 
-## Architecture
+## 2. Technologies Used
 
-Developer
-  -> GitHub push or pull request
-  -> GitHub Actions
-  -> Install dependencies
-  -> Run pytest
-  -> Build Docker image
-  -> On successful push to main, trigger Render
-  -> Render builds and deploys the application
-  -> Health-check verification
+- **Python** — application programming language
+- **FastAPI** — REST API framework
+- **Uvicorn** — ASGI server
+- **pytest** — automated testing
+- **Docker** — application containerization
+- **GitHub Actions** — continuous integration and deployment automation
+- **Render** — application hosting
 
-## Project Structure
+## 3. Prerequisites
 
-- app/: Application source code
-- tests/: Automated tests
-- .github/workflows/: CI/CD configuration
-- Dockerfile: Docker image instructions
-- compose.yaml: Local container configuration
-- render.yaml: Render service configuration
-
-## Prerequisites
+Install the following tools before running the project locally:
 
 - Python 3.12
 - Git
-- Docker Desktop or Docker Engine
-- GitHub account
-- Render account
+- Docker Desktop (required for local Docker commands)
+- Visual Studio Code (optional)
 
-## Run Locally
+## 4. Installation and Setup
 
-Create and activate a virtual environment.
+Clone the repository:
 
-Windows PowerShell:
+```bash
+git clone https://github.com/pranamya07/devops_mini.git
+cd devops_mini
+```
 
-    py -3.12 -m venv .venv
-    .\.venv\Scripts\Activate.ps1
+Create and activate a virtual environment if desired.
 
-macOS/Linux:
+On Windows:
 
-    python3.12 -m venv .venv
-    source .venv/bin/activate
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
 
-Install dependencies:
+Install the development dependencies:
 
-    pip install -r requirements-dev.txt
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements-dev.txt
+```
 
-Create a local environment file by copying
-.env.example to .env.
+Run the API locally:
 
-Run tests:
+```bash
+uvicorn app.main:app --reload
+```
 
-    pytest -v
+Open the following URLs in your browser:
 
-Run the API:
+- API root: http://127.0.0.1:8000/
+- Interactive API documentation: http://127.0.0.1:8000/docs
 
-    uvicorn app.main:app --reload
+## 5. API Endpoints
 
-Open http://127.0.0.1:8000/docs
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/` | Returns basic project information |
+| GET | `/health` | Reports the application's health status |
+| GET | `/api/v1/greet/{name}` | Returns a greeting for the supplied name |
+| GET | `/api/v1/deployment-info` | Returns application name, environment, version, and running status |
 
-## Run With Docker Compose
+The deployment-info endpoint should be available in the deployed application after the corresponding changes have been merged into the deployment branch and deployed successfully.
 
-Create .env from .env.example, then run:
+## 6. Automated Testing
 
-    docker compose up --build -d
+Run the test suite from the repository root:
 
-Inspect logs:
+```bash
+pytest -v
+```
 
-    docker compose logs -f api
+The tests verify the API's expected responses. Run the tests before submitting code changes.
 
-Stop the application:
+## 7. Docker
 
-    docker compose down
+Build the Docker image from the repository root:
 
-## API Endpoints
+```bash
+docker build -t fastapi-cicd-devops .
+```
 
-- GET /
-- GET /health
-- GET /api/v1/greet/{name}
-- GET /docs
+Run the container:
 
-## CI/CD Workflow
+```bash
+docker run -p 8000:8000 fastapi-cicd-devops
+```
 
-Pull requests and pushes to main trigger automated tests
-and Docker build validation.
+If the Dockerfile uses a different internal port or startup command, adjust the run instructions to match the actual Dockerfile.
 
-Successful pushes to main trigger the Render deployment
-hook after the test-and-build job succeeds.
+## 8. CI/CD Pipeline
 
-Configure the repository secret RENDER_DEPLOY_HOOK_URL
-before enabling production deployment.
+The GitHub Actions workflow is defined in `.github/workflows/ci-cd.yml`.
 
-## Environment Variables
+The pipeline:
 
-- APP_NAME: Application display name
-- APP_ENV: Current environment
+1. Checks out the repository.
+2. Sets up Python.
+3. Installs development dependencies.
+4. Runs automated tests.
+5. Builds a Docker image.
+6. Triggers a Render deployment when the workflow's deployment conditions are satisfied.
 
-Local values belong in .env. Production values are
-configured through the hosting platform.
+The workflow runs on the configured branches and pull requests. Deployment is restricted to pushes to `main` after the test-and-build job succeeds.
 
-## Troubleshooting
+## 9. Deployment
 
-1. If tests fail, inspect the pytest assertion and traceback.
-2. If Docker fails, inspect the build output.
-3. If the container exits, inspect docker compose logs.
-4. If the deployment job fails, check the GitHub Actions
-   logs and verify the deployment-hook secret.
-5. If the service is unavailable, inspect Render deployment
-   logs and verify GET /health.
+The application is hosted on Render.
 
-## Future Improvements
+- **Live API:** https://devops-mini-sxph.onrender.com
+- **Swagger documentation:** https://devops-mini-sxph.onrender.com/docs
 
-- Publish versioned images to GitHub Container Registry
-- Add PostgreSQL and database migrations
-- Add Prometheus and Grafana monitoring
-- Add container vulnerability scanning
-- Add deployment notifications and rollback procedures
+The GitHub Actions workflow triggers deployment using a Render deploy hook stored in GitHub repository secrets. Secret values must not be committed to the repository or included in this documentation.
 
-- ## Test line
-- CI verification test for the dev branch.
+A change merged into `dev` does not automatically mean that it is live on Render. Changes must reach `main`, and the deployment workflow must complete successfully.
+
+## 10. Project Structure
+
+```text
+devops_mini/
+├── app/
+│   ├── main.py
+│   └── config.py
+├── tests/
+├── .github/
+│   └── workflows/
+│       └── ci-cd.yml
+├── Dockerfile
+├── requirements-dev.txt
+└── README.md
+```
+
+Verify the actual repository structure before treating this tree as exhaustive.
