@@ -44,7 +44,7 @@ def test_deployment_info_endpoint():
     assert response.status_code == 200
 
     data = response.json()
-    assert data["app_name"]
-    assert data["environment"]
+    assert data["app_name"] == "DevOps Demo API"
+    assert data["environment"] == "development"
     assert data["version"] == "1.0.0"
     assert data["status"] == "running"
