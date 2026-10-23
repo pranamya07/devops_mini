@@ -1,0 +1,12 @@
+
+services:
+  - type: web
+    name: fastapi-cicd-devops
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: APP_NAME
+        value: DevOps Demo API
+      - key: APP_ENV
+        value: production
