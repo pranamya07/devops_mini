@@ -36,3 +36,15 @@ def test_greeting_endpoint_with_another_name():
 
     assert response.status_code == 200
     assert response.json() == {"message": "Hello, Alex!"}
+
+
+def test_deployment_info_endpoint():
+    response = client.get("/api/v1/deployment-info")
+
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["app_name"] == "DevOps Demo API"
+    assert data["environment"] == "development"
+    assert data["version"] == "1.0.0"
+    assert data["status"] == "running"
