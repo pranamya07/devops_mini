@@ -23,3 +23,9 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local SQLite fallback database
+*.db
+
+# Test reports
+reports/

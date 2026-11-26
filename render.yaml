@@ -1,12 +1,33 @@
+# Render Blueprint: the API (prebuilt image from GHCR) + a PostgreSQL database.
+# CI decides which image version runs: each release calls the deploy hook with
+# an exact tag (e.g. :1.1.0), and rollbacks deploy an earlier tag the same way.
+# Setup steps: docs/release-and-rollback.md
+
+databases:
+  - name: taskapi-db
+    plan: free
+    databaseName: taskapi
+    user: taskapi
 
 services:
   - type: web
-    name: fastapi-cicd-devops
-    runtime: docker
+    name: devops-mini
+    runtime: image
+    image:
+      # Starting image (published by every push to main). Releases then deploy
+      # exact versions through the deploy hook.
+      url: ghcr.io/pranamya07/devops_mini:main
     plan: free
     healthCheckPath: /health
     envVars:
       - key: APP_NAME
-        value: DevOps Demo API
+        value: Task Management API
       - key: APP_ENV
         value: production
+      - key: LOG_LEVEL
+        value: INFO
+      # APP_VERSION is baked into each image by CI; do not set it here.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: taskapi-db
+          property: connectionString

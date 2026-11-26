@@ -1,0 +1,89 @@
+name: Rollback Production
+
+# Manual rollback: Actions > "Rollback Production" > Run workflow > enter a version.
+# Deploys an image that CI already built, scanned and pushed, then verifies it.
+# (GitHub only shows the "Run workflow" button for workflows on the default branch.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to deploy, e.g. 1.1.0 (must be a released version)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  rollback:
+    name: Roll back to v${{ inputs.version }}
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+      url: ${{ vars.RENDER_SERVICE_URL }}
+
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    env:
+      VERSION: ${{ inputs.version }}
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      SERVICE_URL: ${{ vars.RENDER_SERVICE_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Check the requested version
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must look like 1.1.0 (no leading v), got '$VERSION'"
+            exit 1
+          fi
+          if ! docker manifest inspect "$IMAGE_NAME:$VERSION" > /dev/null; then
+            echo "::error::Image $IMAGE_NAME:$VERSION not found in GHCR (is the package public?)"
+            exit 1
+          fi
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ] || [ -z "$SERVICE_URL" ]; then
+            echo "::error::Set the RENDER_DEPLOY_HOOK_URL secret and RENDER_SERVICE_URL variable."
+            exit 1
+          fi
+          echo "Rolling back production to $IMAGE_NAME:$VERSION"
+
+      - name: Deploy requested version to Render
+        run: ./scripts/render_deploy.sh "$IMAGE_NAME:$VERSION"
+
+      - name: Post-deployment health check
+        id: verify
+        run: |
+          python3 scripts/verify_deployment.py \
+            --base-url "$SERVICE_URL" \
+            --expected-version "$VERSION"
+
+      - name: Publish rollback summary
+        if: always()
+        env:
+          OUTCOME: ${{ steps.verify.outcome }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          if [ "$OUTCOME" = success ]; then
+            result="✅ v$VERSION is live and verified"
+          else
+            result="❌ v$VERSION did not pass its checks"
+          fi
+          {
+            echo "## Manual rollback to v$VERSION"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Result | $result |"
+            echo "| Requested by | $ACTOR |"
+            echo "| Image | \`$IMAGE_NAME:$VERSION\` |"
+            echo "| Live URL | $SERVICE_URL |"
+          } >> "$GITHUB_STEP_SUMMARY"

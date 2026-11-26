@@ -1,143 +1,217 @@
-# FastAPI CI/CD DevOps Project
+# Task Management API: DevOps CI/CD Project
 
-## 1. Project Overview
+[![CI/CD](https://github.com/pranamya07/devops_mini/actions/workflows/ci-cd.yml/badge.svg?branch=main)](https://github.com/pranamya07/devops_mini/actions/workflows/ci-cd.yml)
 
-This project demonstrates how to build, test, containerize, and deploy a REST API using FastAPI and DevOps practices.
+A REST API for managing tasks, built with **FastAPI** and **PostgreSQL**. Every change goes
+through an automated pipeline:
 
-The project uses automated testing and a GitHub Actions CI/CD pipeline. Docker is used to package the application, and Render hosts the deployed API.
+- linting
+- automated tests
+- Trivy security scans
+- a versioned Docker image in GitHub Container Registry
+- deployment to **Render**
+- post-deployment checks, with **automatic rollback** if they fail
 
-## 2. Technologies Used
+**Prometheus** and **Grafana** monitor traffic, errors, latency, CPU and memory.
 
-- **Python** — application programming language
-- **FastAPI** — REST API framework
-- **Uvicorn** — ASGI server
-- **pytest** — automated testing
-- **Docker** — application containerization
-- **GitHub Actions** — continuous integration and deployment automation
-- **Render** — application hosting
+- **Live API:** https://devops-mini-sxph.onrender.com (the free plan sleeps when idle, so the first request can take about a minute)
+- **API docs (Swagger):** https://devops-mini-sxph.onrender.com/docs
 
-## 3. Prerequisites
+## Architecture
 
-Install the following tools before running the project locally:
+```mermaid
+flowchart LR
+    dev([Developer]) -->|push / PR / tag| gh[GitHub]
+    gh --> ci
 
-- Python 3.12
-- Git
-- Docker Desktop (required for local Docker commands)
-- Visual Studio Code (optional)
+    subgraph ci [GitHub Actions]
+        direction TB
+        lint[Lint & code quality]
+        test[Unit, API & DB tests]
+        scan[Trivy code scan]
+        build[Docker build → Trivy image scan → smoke test]
+        lint --> build
+        test --> build
+        scan --> build
+    end
 
-## 4. Installation and Setup
+    build -->|versioned image| ghcr[(GHCR)]
+    ghcr -->|deploy exact version| api
 
-Clone the repository:
+    subgraph render [Render]
+        api[FastAPI app] --> db[(PostgreSQL)]
+    end
+
+    ci -.->|post-deploy checks, rollback on failure| api
+    prom[Prometheus] -->|scrape /metrics| api
+    prom --> graf[Grafana]
+    prom --> alerts[Alert rules]
+```
+
+The full set of diagrams (pipeline, Docker, database, monitoring, release flow) is in
+[docs/architecture.md](docs/architecture.md).
+
+## What's included
+
+| Area | What it does | Where |
+|---|---|---|
+| Application | Task CRUD with input validation; Swagger at `/docs`; `/health` checks the database | [app/](app/) |
+| Database | PostgreSQL via SQLAlchemy; data persists across container restarts | [app/models.py](app/models.py), [compose.yaml](compose.yaml) |
+| Containers | Docker image runs as non-root (UID 10001), with a health check and OS security patches; Compose runs API + PostgreSQL + Prometheus + Grafana | [Dockerfile](Dockerfile), [compose.yaml](compose.yaml) |
+| Testing | 159 tests (unit, API, database), 97% coverage, alert-rule tests, container smoke test | [tests/](tests/), [docs/testing.md](docs/testing.md) |
+| CI/CD | Lint → tests → Trivy → build → scan → smoke test → versioned image → GHCR → Render → post-deploy checks | [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml) |
+| Security | Trivy image and code scans block fixable HIGH/CRITICAL issues; secrets only in GitHub Secrets | [docs/security.md](docs/security.md) |
+| Monitoring | Prometheus metrics, a 13-panel Grafana dashboard, 4 alert rules | [monitoring/](monitoring/), [docs/monitoring.md](docs/monitoring.md) |
+| Logging | Timestamped, levelled logs; request IDs; errors on a separate stream; log rotation | [app/logging_config.py](app/logging_config.py) |
+| Versioning & rollback | `git tag v1.2.0` releases that version; failed releases roll back automatically | [docs/release-and-rollback.md](docs/release-and-rollback.md) |
+
+## Quick start (Docker Compose)
+
+You need Docker Desktop.
 
 ```bash
 git clone https://github.com/pranamya07/devops_mini.git
 cd devops_mini
+cp .env.example .env          # then set POSTGRES_PASSWORD in .env
+docker compose up -d --build
 ```
 
-Create and activate a virtual environment if desired.
+| Service | URL |
+|---|---|
+| API docs (Swagger) | http://localhost:8000/docs |
+| Grafana dashboard | http://localhost:3000 (opens on "Task API - Overview", no login needed to view) |
+| Prometheus | http://localhost:9090 (alerts at `/alerts`) |
 
-On Windows:
+Try it out:
 
 ```bash
-python -m venv venv
-venv\Scripts\activate
+# Create a task
+curl -X POST localhost:8000/api/v1/tasks -H 'content-type: application/json' \
+     -d '{"title": "Write report", "priority": "high"}'
+
+# Restart the containers. The task is still there afterwards.
+docker compose restart api db
+curl localhost:8000/api/v1/tasks
+
+# Send traffic so the Grafana dashboard has data
+python3 scripts/generate_traffic.py --duration 120
 ```
 
-Install the development dependencies:
+To stop everything, run `docker compose down`. Data is kept in Docker volumes; add `-v` to delete it.
+If a port is already in use, set `API_PORT`, `GRAFANA_PORT` or `PROMETHEUS_PORT` in `.env`.
+
+## Running without Docker
 
 ```bash
-python -m pip install --upgrade pip
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
+uvicorn app.main:app --reload     # uses a local SQLite file unless DATABASE_URL is set
+pytest                            # all tests, with a coverage report
 ```
 
-Run the API locally:
+## API endpoints
 
-```bash
-uvicorn app.main:app --reload
-```
-
-Open the following URLs in your browser:
-
-- API root: http://127.0.0.1:8000/
-- Interactive API documentation: http://127.0.0.1:8000/docs
-
-## 5. API Endpoints
-
-| Method | Endpoint | Purpose |
+| Method | Endpoint | Description |
 |---|---|---|
-| GET | `/` | Returns basic project information |
-| GET | `/health` | Reports the application's health status |
-| GET | `/api/v1/greet/{name}` | Returns a greeting for the supplied name |
-| GET | `/api/v1/deployment-info` | Returns application name, environment, version, and running status |
+| POST | `/api/v1/tasks` | Create a task (returns `201` and a `Location` header) |
+| GET | `/api/v1/tasks` | List tasks; filter with `status`, `priority`; paginate with `limit` (1–100), `offset` |
+| GET | `/api/v1/tasks/{id}` | Get one task (`404` if missing) |
+| PUT | `/api/v1/tasks/{id}` | Replace a task |
+| PATCH | `/api/v1/tasks/{id}` | Update only the fields sent |
+| DELETE | `/api/v1/tasks/{id}` | Delete a task (`204`) |
+| GET | `/health` | `200` if the API and database are up, `503` if the database is unreachable |
+| GET | `/api/v1/deployment-info` | App name, environment and **running version** |
+| GET | `/metrics` | Prometheus metrics |
+| GET | `/docs` | Swagger UI |
 
-The deployment-info endpoint should be available in the deployed application after the corresponding changes have been merged into the deployment branch and deployed successfully.
+A task has:
 
-## 6. Automated Testing
+| Field | Required | Rules |
+|---|---|---|
+| `title` | yes | 1–200 characters; surrounding spaces are trimmed |
+| `description` | no | up to 1000 characters |
+| `status` | no | `todo` (default), `in_progress` or `done` |
+| `priority` | no | `low`, `medium` (default) or `high` |
+| `due_date` | no | a date, such as `2026-12-31` |
 
-Run the test suite from the repository root:
+Unknown fields and invalid values are rejected with `422`. If the database is down, the API
+returns `503` instead of crashing.
 
-```bash
-pytest -v
-```
+## CI/CD pipeline
 
-The tests verify the API's expected responses. Run the tests before submitting code changes.
+| Trigger | What runs |
+|---|---|
+| Pull request to `dev` / `main` | Lint, tests (on PostgreSQL), Trivy scans, Docker build, image scan, smoke test. Nothing is published. |
+| Push to `dev` / `main` | All of the above, then pushes the image to GHCR as `dev`/`main` and `sha-<commit>` |
+| Tag `v1.2.0` | All of the above, plus images `1.2.0`, `1.2` and `latest`, then **deploys to Render**, verifies the live site and rolls back if the checks fail |
+| Manual "Rollback Production" | Deploys an earlier version and verifies it |
 
-## 7. Docker
+The pipeline fails, and nothing is published, if:
+- any test fails, or coverage drops below 90%
+- linting fails
+- Trivy finds a fixable HIGH or CRITICAL vulnerability, a leaked secret or a Dockerfile misconfiguration
+- the container smoke test fails
 
-Build the Docker image from the repository root:
+## Configuration
 
-```bash
-docker build -t fastapi-cicd-devops .
-```
+| Variable | Default | Used for |
+|---|---|---|
+| `DATABASE_URL` | SQLite file `./tasks.db` | Database connection. Compose and Render set it to PostgreSQL. |
+| `APP_NAME` | `Task Management API` | Shown in `/` and `/api/v1/deployment-info` |
+| `APP_ENV` | `development` | `production` on Render |
+| `APP_VERSION` | `1.0.0` | Set by CI from the release tag and baked into the image |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
+| `POSTGRES_PASSWORD` | (none, required) | Compose's PostgreSQL password, set in `.env` |
+| `GRAFANA_ADMIN_PASSWORD` | `admin` | Grafana admin login (local only) |
 
-Run the container:
+Secrets go in `.env` (which git ignores) or in GitHub Secrets, never in the code.
 
-```bash
-docker run -p 8000:8000 fastapi-cicd-devops
-```
-
-If the Dockerfile uses a different internal port or startup command, adjust the run instructions to match the actual Dockerfile.
-
-## 8. CI/CD Pipeline
-
-The GitHub Actions workflow is defined in `.github/workflows/ci-cd.yml`.
-
-The pipeline:
-
-1. Checks out the repository.
-2. Sets up Python.
-3. Installs development dependencies.
-4. Runs automated tests.
-5. Builds a Docker image.
-6. Triggers a Render deployment when the workflow's deployment conditions are satisfied.
-
-The workflow runs on the configured branches and pull requests. Deployment is restricted to pushes to `main` after the test-and-build job succeeds.
-
-## 9. Deployment
-
-The application is hosted on Render.
-
-- **Live API:** https://devops-mini-sxph.onrender.com
-- **Swagger documentation:** https://devops-mini-sxph.onrender.com/docs
-
-The GitHub Actions workflow triggers deployment using a Render deploy hook stored in GitHub repository secrets. Secret values must not be committed to the repository or included in this documentation.
-
-A change merged into `dev` does not automatically mean that it is live on Render. Changes must reach `main`, and the deployment workflow must complete successfully.
-
-## 10. Project Structure
+## Project structure
 
 ```text
 devops_mini/
 ├── app/
-│   ├── main.py
-│   └── config.py
+│   ├── main.py              # FastAPI app, health, metrics, error handling
+│   ├── routers/tasks.py     # /api/v1/tasks endpoints
+│   ├── schemas.py           # request/response validation (Pydantic)
+│   ├── models.py            # database table (SQLAlchemy)
+│   ├── crud.py              # database operations
+│   ├── database.py          # engine, sessions, connectivity check
+│   ├── config.py            # settings from environment variables
+│   ├── observability.py     # Prometheus metrics + request logging middleware
+│   ├── logging_config.py    # log format, levels, stdout/stderr split
+│   └── healthcheck.py       # Docker HEALTHCHECK command
 ├── tests/
-├── .github/
-│   └── workflows/
-│       └── ci-cd.yml
+│   ├── unit/                # no database or HTTP (58 tests)
+│   ├── api/                 # HTTP tests via TestClient (88 tests)
+│   └── db/                  # database layer (13 tests)
+├── monitoring/
+│   ├── prometheus/          # scrape config, alert rules, alert-rule tests
+│   └── grafana/             # data source + dashboard, loaded automatically
+├── scripts/
+│   ├── smoke_test.sh            # container test: health, non-root, data survives restart
+│   ├── verify_deployment.py     # post-deployment checks on the live site
+│   ├── render_deploy.sh         # deploy one exact image version to Render
+│   ├── last_good_release.sh     # pick the rollback target
+│   ├── generate_traffic.py      # load generator for the dashboard
+│   └── test_summary.py          # test results table for the CI run page
+├── docs/                    # architecture, testing, security, monitoring, release guides
+├── .github/workflows/
+│   ├── ci-cd.yml            # main pipeline
+│   └── rollback.yml         # manual rollback
 ├── Dockerfile
-├── requirements-dev.txt
-└── README.md
+├── compose.yaml
+├── render.yaml              # Render Blueprint (web service + PostgreSQL)
+├── pyproject.toml           # pytest, coverage and Ruff settings
+├── requirements.txt
+└── requirements-dev.txt
 ```
 
-Verify the actual repository structure before treating this tree as exhaustive.
+## Documentation
+
+- [Architecture](docs/architecture.md): system, CI/CD, Docker, database and monitoring diagrams
+- [Testing](docs/testing.md): test strategy, what each suite covers, latest results
+- [Security](docs/security.md): Trivy scanning, container hardening, secrets handling
+- [Monitoring and logging](docs/monitoring.md): metrics, dashboard, alerts, logs
+- [Releases and rollback](docs/release-and-rollback.md): setup, releasing, the rollback demo
+- [Evidence checklist](docs/evidence-checklist.md): screenshots and results for the project report

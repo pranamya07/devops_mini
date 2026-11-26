@@ -1,11 +1,21 @@
-
 name: FastAPI CI-CD Pipeline
+
+# Pipeline:
+#   lint ──────────┐   (Ruff, hadolint, Prometheus rules, Grafana dashboard)
+#   test ──────────┼──> build: Docker build -> Trivy image scan -> smoke test
+#   security-scan ─┘           -> version tags -> push to GHCR
+#                                   │
+#             (version tags only)   └──> deploy: Render -> post-deploy checks
+#                                                 └── checks fail -> roll back
 
 on:
   push:
     branches:
       - main
       - dev
+    # Pushing a version tag such as v1.1.0 builds and publishes that version.
+    tags:
+      - "v*.*.*"
   pull_request:
     branches:
       - main
@@ -14,56 +24,406 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  # Cancel outdated PR runs, but never stop a main/dev/tag run halfway.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  TRIVY_IMAGE: aquasec/trivy:0.76.2
+  HADOLINT_IMAGE: hadolint/hadolint:v2.15.1
+  PROMETHEUS_IMAGE: prom/prometheus:v3.16.0
+
 jobs:
-  test-and-build:
-    name: Test and Build Docker Image
+  lint:
+    name: Lint and Code Quality
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Ruff
+        run: pip install "$(grep -E '^ruff' requirements-dev.txt)"
+
+      - name: Ruff lint (bugs, style and security rules)
+        run: ruff check --output-format=github .
+
+      - name: Ruff formatting check
+        run: ruff format --check --diff .
+
+      - name: Lint Dockerfile with hadolint
+        run: docker run --rm -i "$HADOLINT_IMAGE" < Dockerfile
+
+      - name: Validate Prometheus config and alert rules
+        run: |
+          promtool() {
+            docker run --rm -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" \
+              -w /etc/prometheus --entrypoint promtool "$PROMETHEUS_IMAGE" "$@"
+          }
+          promtool check config prometheus.yml
+          # Unit tests: feed fake metrics and check the right alerts fire.
+          promtool test rules alerts.test.yml
+
+      - name: Validate Grafana dashboard JSON
+        run: |
+          for file in monitoring/grafana/dashboards/*.json; do
+            python -m json.tool "$file" > /dev/null && echo "valid: $file"
+          done
+
+  test:
+    name: Unit, API and Database Tests
+    runs-on: ubuntu-latest
+
+    # A throwaway PostgreSQL that exists only while this job runs,
+    # so the tests exercise the same database engine as production.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: taskapi
+          POSTGRES_PASSWORD: taskapi_ci
+          POSTGRES_DB: taskapi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U taskapi -d taskapi_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://taskapi:taskapi_ci@localhost:5432/taskapi_test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Run automated tests
-        run: pytest -v
-
-      - name: Build Docker image
+      # Fails the pipeline if any test fails or coverage drops below 90%.
+      - name: Run unit, API and database tests
         run: |
-          docker build \
-            -t fastapi-cicd-devops:${{ github.sha }} .
+          pytest -v \
+            --junitxml=reports/junit.xml \
+            --cov-report=xml:reports/coverage.xml \
+            --cov-report=html:reports/coverage-html
 
-  deploy:
-    name: Deploy to Render
-    runs-on: ubuntu-latest
-    needs: test-and-build
-
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Trigger Render deployment
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      - name: Publish test summary
+        if: always()
         run: |
-          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
-            echo "Missing RENDER_DEPLOY_HOOK_URL secret."
-            exit 1
+          if [ -f reports/junit.xml ]; then
+            {
+              python scripts/test_summary.py reports/junit.xml
+              echo "## Coverage"
+              coverage report --format=markdown
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          curl --fail --silent --show-error \
-            --request POST \
-            "$RENDER_DEPLOY_HOOK_URL"
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: reports/
+          if-no-files-found: ignore
 
-          echo "Render deployment request submitted."
+  security-scan:
+    name: Trivy Scan (Code and Config)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Looks for leaked secrets, Dockerfile misconfigurations and
+      # vulnerable pinned dependencies in the repository itself.
+      - name: Trivy filesystem scan
+        run: |
+          docker run --rm -v "$PWD:/src:ro" "$TRIVY_IMAGE" fs \
+            --scanners vuln,secret,misconfig \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            /src
+
+  build:
+    name: Build, Scan and Publish Docker Image
+    runs-on: ubuntu-latest
+    needs: [lint, test, security-scan]
+
+    permissions:
+      contents: read
+      packages: write # push images to GHCR
+      security-events: write # show Trivy findings in the Security tab
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Tags per event:
+      #   tag v1.2.0 -> 1.2.0, 1.2, latest, sha-abc1234
+      #   push main  -> main, sha-abc1234
+      #   push dev   -> dev, sha-abc1234
+      #   PR #12     -> pr-12 (built and scanned, never pushed)
+      - name: Work out image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Work out the version the app reports
+        id: version
+        env:
+          META_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            app_version="${GITHUB_REF_NAME#v}"
+          else
+            app_version="${META_VERSION}-${GITHUB_SHA::7}"
+          fi
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "App version: $app_version"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          pull: true
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            taskapi:ci
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: APP_VERSION=${{ steps.version.outputs.app_version }}
+
+      - name: Trivy image scan
+        run: |
+          mkdir -p reports
+          trivy() {
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+              -v "$PWD/reports:/reports" \
+              "$TRIVY_IMAGE" image --scanners vuln,secret "$@" taskapi:ci
+          }
+
+          # Full report of every severity, for the Security tab and the artifact.
+          trivy --format sarif --output /reports/trivy-image.sarif
+          trivy --format table --output /reports/trivy-image-full.txt
+
+          # The gate: fail if any HIGH/CRITICAL issue has a fix available.
+          status=0
+          trivy --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+            --format table --output /reports/trivy-image.txt || status=$?
+          cat reports/trivy-image.txt
+          exit $status
+
+      - name: Upload Trivy findings to the Security tab
+        if: >-
+          always() && hashFiles('reports/trivy-image.sarif') != '' &&
+          (github.event_name == 'push' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: reports/trivy-image.sarif
+          category: trivy-image
+
+      - name: Upload Trivy reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: trivy-reports
+          path: reports/
+          if-no-files-found: ignore
+
+      # Runs the exact image about to be published with PostgreSQL and checks
+      # health, non-root user and that data survives a container restart.
+      - name: Smoke test image with Docker Compose
+        env:
+          API_IMAGE: taskapi:ci
+        run: ./scripts/smoke_test.sh
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push versioned image to GHCR
+        id: push
+        if: github.event_name == 'push'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while read -r tag; do
+            [ -n "$tag" ] && docker push --quiet "$tag"
+          done <<< "$TAGS"
+
+      - name: Publish image summary
+        if: always()
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+          PUSHED: ${{ steps.push.outcome == 'success' }}
+        run: |
+          {
+            echo "## Docker image"
+            echo ""
+            echo "App version: \`$APP_VERSION\`"
+            echo ""
+            if [ "$PUSHED" = "true" ]; then
+              echo "Pushed to GHCR:"
+            else
+              echo "Built and scanned, not pushed (pull request or an earlier step failed):"
+            fi
+            echo ""
+            while read -r tag; do [ -n "$tag" ] && echo "- \`$tag\`"; done <<< "$TAGS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Runs only for version tags (git tag v1.1.0 && git push origin v1.1.0).
+  deploy:
+    name: Deploy to Render and Verify
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    # Shows up under the repo's "Deployments", with history per version.
+    environment:
+      name: production
+      url: ${{ vars.RENDER_SERVICE_URL }}
+
+    # One deployment (or rollback) at a time, never cancelled halfway.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      deployments: read # find the last successful release to roll back to
+
+    env:
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      SERVICE_URL: ${{ vars.RENDER_SERVICE_URL }}
+
+    steps:
+      - name: Checkout repository (with tags)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check deployment settings
+        run: |
+          missing=0
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::error::Add the RENDER_DEPLOY_HOOK_URL repository secret (Render > service > Settings > Deploy Hook)."
+            missing=1
+          fi
+          if [ -z "$SERVICE_URL" ]; then
+            echo "::error::Add the RENDER_SERVICE_URL repository variable, e.g. https://devops-mini-xxxx.onrender.com"
+            missing=1
+          fi
+          exit $missing
+
+      - name: Work out release and rollback versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          previous_tag=$(./scripts/last_good_release.sh "$GITHUB_REF_NAME")
+          previous="${previous_tag#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version; rollback target: ${previous:-none (first release)}"
+
+      - name: Deploy new version to Render
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: ./scripts/render_deploy.sh "$IMAGE_NAME:$VERSION"
+
+      - name: Post-deployment health check
+        id: verify
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          python3 scripts/verify_deployment.py \
+            --base-url "$SERVICE_URL" \
+            --expected-version "$VERSION"
+
+      # The new version failed its checks: put the last good version back.
+      # The job still ends as failed, because the release itself failed.
+      - name: Roll back to last good version
+        id: rollback
+        if: failure() && steps.verify.outcome == 'failure' && steps.versions.outputs.previous != ''
+        env:
+          PREVIOUS: ${{ steps.versions.outputs.previous }}
+        run: |
+          echo "::warning::Release ${GITHUB_REF_NAME} failed its checks, rolling back to v$PREVIOUS"
+          ./scripts/render_deploy.sh "$IMAGE_NAME:$PREVIOUS"
+          python3 scripts/verify_deployment.py \
+            --base-url "$SERVICE_URL" \
+            --expected-version "$PREVIOUS"
+
+      - name: Publish release summary
+        if: always()
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+          PREVIOUS: ${{ steps.versions.outputs.previous }}
+          DEPLOY: ${{ steps.verify.outcome }}
+          ROLLBACK: ${{ steps.rollback.outcome }}
+        run: |
+          case "$DEPLOY" in
+            success) result="✅ v$VERSION deployed and verified" ;;
+            failure) result="❌ v$VERSION failed its post-deployment checks" ;;
+            *)       result="⚠️ v$VERSION was not deployed (an earlier step failed)" ;;
+          esac
+          case "$ROLLBACK" in
+            success) rollback="✅ rolled back to v$PREVIOUS, which is live and verified" ;;
+            failure) rollback="❌ rollback to v$PREVIOUS failed: check Render now" ;;
+            *)       rollback="not needed" ;;
+          esac
+          [ "$DEPLOY" = failure ] && [ -z "$PREVIOUS" ] && rollback="⚠️ no earlier release to roll back to"
+          {
+            echo "## Release v$VERSION"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Result | $result |"
+            echo "| Rollback | $rollback |"
+            echo "| Image | \`$IMAGE_NAME:$VERSION\` |"
+            echo "| Rollback target | ${PREVIOUS:+v$PREVIOUS}${PREVIOUS:-none} |"
+            echo "| Live URL | $SERVICE_URL |"
+          } >> "$GITHUB_STEP_SUMMARY"
