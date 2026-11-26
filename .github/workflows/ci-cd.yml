@@ -19,6 +19,26 @@ jobs:
     name: Test and Build Docker Image
     runs-on: ubuntu-latest
 
+    # A throwaway PostgreSQL that exists only while this job runs,
+    # so the tests exercise the same database engine as production.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: taskapi
+          POSTGRES_PASSWORD: taskapi_ci
+          POSTGRES_DB: taskapi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U taskapi -d taskapi_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://taskapi:taskapi_ci@localhost:5432/taskapi_test
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,15 +48,39 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Run automated tests
-        run: pytest -v
+      # Fails the pipeline if any test fails or coverage drops below 90%.
+      - name: Run unit, API and database tests
+        run: |
+          pytest -v \
+            --junitxml=reports/junit.xml \
+            --cov-report=xml:reports/coverage.xml \
+            --cov-report=html:reports/coverage-html
+
+      - name: Publish test summary
+        if: always()
+        run: |
+          if [ -f reports/junit.xml ]; then
+            python scripts/test_summary.py reports/junit.xml >> "$GITHUB_STEP_SUMMARY"
+            echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
+            coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: reports/
+          if-no-files-found: ignore
 
       - name: Build Docker image
         run: |

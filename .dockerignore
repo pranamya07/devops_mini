@@ -15,3 +15,6 @@ tests
 .vscode
 .idea
 *.db
+scripts
+pyproject.toml
+reports
