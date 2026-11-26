@@ -11,7 +11,7 @@ databases:
 
 services:
   - type: web
-    name: fastapi-cicd-devops
+    name: devops-mini
     runtime: image
     image:
       # Starting image (published by every push to main). Releases then deploy

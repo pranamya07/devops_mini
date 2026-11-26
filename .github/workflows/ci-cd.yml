@@ -352,7 +352,7 @@ jobs:
             missing=1
           fi
           if [ -z "$SERVICE_URL" ]; then
-            echo "::error::Add the RENDER_SERVICE_URL repository variable, e.g. https://fastapi-cicd-devops.onrender.com"
+            echo "::error::Add the RENDER_SERVICE_URL repository variable, e.g. https://devops-mini-xxxx.onrender.com"
             missing=1
           fi
           exit $missing
