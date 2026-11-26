@@ -1,0 +1,18 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --cov=app --cov-report=term-missing"
+markers = [
+    "unit: fast tests with no database or HTTP server",
+    "api: HTTP tests that call the API through FastAPI's TestClient",
+    "db: tests that talk to the database layer directly",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+# CI fails if test coverage drops below this percentage.
+fail_under = 90
+show_missing = true
+skip_empty = true
