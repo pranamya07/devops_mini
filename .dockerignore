@@ -14,3 +14,4 @@ tests
 !.env.example
 .vscode
 .idea
+*.db
