@@ -1,7 +1,7 @@
 # Deployed API on Render, scraped by the `task-api-render` job.
 # Replace the empty list with your service's hostname, for example:
 #
-# - targets: ["fastapi-cicd-devops.onrender.com"]
+# - targets: ["devops-mini-xxxx.onrender.com"]
 #   labels:
 #     deployment: render
 []

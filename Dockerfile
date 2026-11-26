@@ -22,7 +22,10 @@ RUN groupadd --system --gid 10001 app \
 
 # Install production dependencies first for build caching.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Remove pip once dependencies are installed: the running app never needs it, and
+# Trivy flagged CVEs in the pip copy (and its vendored setuptools) in the base image.
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall --yes pip
 
 # Copy application source code.
 COPY app ./app
