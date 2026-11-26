@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Iterator
 
 from sqlalchemy import create_engine, text
@@ -6,6 +7,8 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.config import DATABASE_URL
+
+logger = logging.getLogger("app.database")
 
 
 class Base(DeclarativeBase):
@@ -47,5 +50,6 @@ def database_is_reachable() -> bool:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
         return True
-    except SQLAlchemyError:
+    except SQLAlchemyError as exc:
+        logger.error("Database unreachable: %s", type(exc).__name__)
         return False

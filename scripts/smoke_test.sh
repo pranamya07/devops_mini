@@ -40,7 +40,8 @@ trap cleanup EXIT
 step() { printf '\n==> %s\n' "$*"; }
 
 step "Starting API ($API_IMAGE) and PostgreSQL"
-"${COMPOSE[@]}" up -d "$BUILD_FLAG" --wait --wait-timeout 120
+# Only the API and its database; the monitoring stack isn't needed here.
+"${COMPOSE[@]}" up -d "$BUILD_FLAG" --wait --wait-timeout 120 api
 
 step "Checking /health"
 curl -fsS "$BASE_URL/health"
@@ -60,7 +61,7 @@ task_id=$(python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])' <<<"$
 
 step "Restarting both containers"
 "${COMPOSE[@]}" restart
-"${COMPOSE[@]}" up -d --no-build --wait --wait-timeout 120
+"${COMPOSE[@]}" up -d --no-build --wait --wait-timeout 120 api
 
 step "Checking task $task_id survived the restart"
 curl -fsS "$BASE_URL/api/v1/tasks/$task_id" | tee /dev/stderr | grep -q '"Smoke test task"'

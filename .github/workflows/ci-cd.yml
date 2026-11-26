@@ -1,7 +1,7 @@
 name: FastAPI CI-CD Pipeline
 
 # Pipeline:
-#   lint ──────────┐
+#   lint ──────────┐   (Ruff, hadolint, Prometheus rules, Grafana dashboard)
 #   test ──────────┼──> build: Docker build -> Trivy image scan -> smoke test
 #   security-scan ─┘           -> version tags -> push to GHCR -> deploy (main only)
 
@@ -30,6 +30,7 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
   TRIVY_IMAGE: aquasec/trivy:0.76.2
   HADOLINT_IMAGE: hadolint/hadolint:v2.15.1
+  PROMETHEUS_IMAGE: prom/prometheus:v3.16.0
 
 jobs:
   lint:
@@ -56,6 +57,22 @@ jobs:
 
       - name: Lint Dockerfile with hadolint
         run: docker run --rm -i "$HADOLINT_IMAGE" < Dockerfile
+
+      - name: Validate Prometheus config and alert rules
+        run: |
+          promtool() {
+            docker run --rm -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" \
+              -w /etc/prometheus --entrypoint promtool "$PROMETHEUS_IMAGE" "$@"
+          }
+          promtool check config prometheus.yml
+          # Unit tests: feed fake metrics and check the right alerts fire.
+          promtool test rules alerts.test.yml
+
+      - name: Validate Grafana dashboard JSON
+        run: |
+          for file in monitoring/grafana/dashboards/*.json; do
+            python -m json.tool "$file" > /dev/null && echo "valid: $file"
+          done
 
   test:
     name: Unit, API and Database Tests

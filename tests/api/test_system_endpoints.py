@@ -84,6 +84,8 @@ def test_deployment_info_reflects_production_settings():
         "APP_ENV": "production",
         "APP_VERSION": "1.1.0",
         "DATABASE_URL": "sqlite:///:memory:",
+        # Keep INFO logs off stdout so the last line is the JSON we print.
+        "LOG_LEVEL": "WARNING",
     }
 
     result = subprocess.run(
