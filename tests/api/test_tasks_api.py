@@ -169,7 +169,9 @@ class TestGetTask:
 
 class TestReplaceTask:
     def test_put_replaces_every_field(self, client, make_task):
-        task = make_task(title="Old", description="old notes", priority="high", due_date="2026-12-01")
+        task = make_task(
+            title="Old", description="old notes", priority="high", due_date="2026-12-01"
+        )
 
         response = client.put(f"{TASKS}/{task['id']}", json={"title": "New"})
 
@@ -226,7 +228,13 @@ class TestUpdateTask:
 
     @pytest.mark.parametrize(
         "payload",
-        [{"title": None}, {"title": ""}, {"status": "later"}, {"priority": None}, {"colour": "red"}],
+        [
+            {"title": None},
+            {"title": ""},
+            {"status": "later"},
+            {"priority": None},
+            {"colour": "red"},
+        ],
     )
     def test_invalid_patch_returns_422(self, client, make_task, payload):
         task = make_task(title="Unchanged")

@@ -8,7 +8,8 @@ import xml.etree.ElementTree as ET
 
 
 def summarize(junit_path: str) -> str:
-    root = ET.parse(junit_path).getroot()
+    # Parses the report pytest just wrote in this job, not untrusted input.
+    root = ET.parse(junit_path).getroot()  # noqa: S314
     suite = root if root.tag == "testsuite" else root.find("testsuite")
     counts = {key: int(suite.get(key, 0)) for key in ("tests", "failures", "errors", "skipped")}
     passed = counts["tests"] - counts["failures"] - counts["errors"] - counts["skipped"]

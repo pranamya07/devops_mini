@@ -1,7 +1,6 @@
 services:
   db:
     image: postgres:17-alpine
-    container_name: taskapi-db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-taskapi}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (copy .env.example)}
@@ -17,12 +16,13 @@ services:
     restart: unless-stopped
 
   api:
+    # CI sets API_IMAGE to the image it just built; locally Compose builds taskapi:local.
+    image: ${API_IMAGE:-taskapi:local}
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: taskapi
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     env_file:
       - path: .env
         required: false
